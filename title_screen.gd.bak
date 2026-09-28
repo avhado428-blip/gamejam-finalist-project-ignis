@@ -1,0 +1,150 @@
+extends Control
+## Title screen — Start / Instructions / Quit. Main scene of the project.
+##
+## Also the first place anything stored is applied: the saved volume and window
+## mode are read here, before a single sound has played, so the game never opens
+## at the wrong volume even for a frame.
+
+## Areas are sequenced by GameState.AREA_SEQUENCE; START simply begins at 0.
+const FIRST_AREA := 0
+
+var _instructions: Control
+var _start: Button
+var _back: Button
+
+
+func _ready() -> void:
+	# The project folder is named "flux" and Godot puts the project name in the
+	# window's title bar, so every build used to introduce itself by the wrong
+	# name. Both of these change the window rather than the game, so they are
+	# skipped inside the editor, where they would edit the editor instead.
+	if not OS.has_feature("editor"):
+		DisplayServer.window_set_title("FALSE//REAL")
+		# hotspot sits on the arrow's tip, measured from the artwork itself
+		Input.set_custom_mouse_cursor(load("res://assets/ui/cursor.png"),
+			Input.CURSOR_ARROW, Vector2(3, 1))
+	Settings.load_from_disk()
+	Settings.apply()
+	GameState.set_paused(false)
+	AudioManager.play_music("music_calm")
+	AudioManager.set_music_distortion(0.0)
+	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_build()
+
+
+func _build() -> void:
+	var bg := ColorRect.new()
+	bg.color = Color(0.043, 0.020, 0.078, 1.0)
+	bg.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(bg)
+	bg.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+
+	var logo := TextureRect.new()
+	logo.texture = load("res://assets/ui/false_real_logo.png")
+	logo.position = Vector2(224, 60)
+	logo.size = Vector2(192, 32)
+	logo.stretch_mode = TextureRect.STRETCH_SCALE
+	logo.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	logo.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(logo)
+
+	add_child(UiStyle.at("the room is not the same twice", 12, 180, 104, 280,
+		UiStyle.TEXT_DIM, HORIZONTAL_ALIGNMENT_CENTER))
+
+	var panel := UiStyle.panel(176, 100)
+	panel.position = Vector2(232, 132)
+	add_child(panel)
+
+	_start = UiStyle.button("START", 144.0)
+	_start.position = Vector2(248, 144)
+	_start.pressed.connect(_on_start)
+	add_child(_start)
+
+	var help := UiStyle.button("INSTRUCTIONS", 144.0)
+	help.position = Vector2(248, 172)
+	help.pressed.connect(_on_instructions)
+	add_child(help)
+
+	var quit := UiStyle.button("QUIT", 144.0)
+	quit.position = Vector2(248, 200)
+	quit.pressed.connect(_on_quit)
+	add_child(quit)
+
+	add_child(UiStyle.at("A / D or stick   move          SPACE or A   jump          Q or RB   shift worlds",
+		10, 20, 296, 600, UiStyle.TEXT_DIM, HORIZONTAL_ALIGNMENT_CENTER))
+	add_child(UiStyle.at("E   interact          R   restart          ESC   pause          F11   fullscreen",
+		10, 20, 312, 600, UiStyle.TEXT_DIM, HORIZONTAL_ALIGNMENT_CENTER))
+
+	_build_instructions()
+	_start.grab_focus()
+
+
+func _build_instructions() -> void:
+	var overlay := ColorRect.new()
+	overlay.color = Color(0.043, 0.020, 0.078, 0.97)
+	overlay.mouse_filter = Control.MOUSE_FILTER_STOP
+	add_child(overlay)
+	overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_instructions = overlay
+
+	var box := UiStyle.panel(448, 268)
+	box.position = Vector2(96, 44)
+	overlay.add_child(box)
+
+	var mid := HORIZONTAL_ALIGNMENT_CENTER
+	overlay.add_child(UiStyle.at("HOW TO BE HERE", 14, 110, 58, 420, Color(0.88, 0.90, 0.96), mid))
+	overlay.add_child(UiStyle.at("PERCEIVED — pale, hazed, still.        TRUE — dim, real, grounded.",
+		11, 110, 88, 420, Color(0.76, 0.79, 0.86), mid))
+	overlay.add_child(UiStyle.at("A / D   move          SPACE   jump          Q   shift reality",
+		12, 110, 116, 420, Color(0.84, 0.86, 0.92), mid))
+	overlay.add_child(UiStyle.at("E   interact          R   restart          ESC   pause",
+		12, 110, 140, 420, Color(0.84, 0.86, 0.92), mid))
+	overlay.add_child(UiStyle.at("Q really does change the world. The HUD always tells you the truth.",
+		11, 110, 178, 420, Color(0.76, 0.79, 0.86), mid))
+	overlay.add_child(UiStyle.at("Some things exist in only one of the two worlds — and the environment",
+		11, 110, 200, 420, Color(0.76, 0.79, 0.86), mid))
+	overlay.add_child(UiStyle.at("is the only thing here that lies. Read solidity, haze, sound.",
+		11, 110, 218, 420, Color(0.76, 0.79, 0.86), mid))
+	overlay.add_child(UiStyle.at("Three hits and the world takes you back to the last post.",
+		11, 110, 244, 420, Color(0.68, 0.71, 0.79), mid))
+
+	_back = UiStyle.button("BACK")
+	_back.position = Vector2(264, 272)
+	_back.pressed.connect(_close_instructions)
+	overlay.add_child(_back)
+
+	_instructions.visible = false
+
+
+func _on_instructions() -> void:
+	AudioManager.play_sfx("ui", -4.0)
+	_instructions.visible = true
+	# The overlay blocks the mouse but the buttons underneath are still focusable,
+	# so START kept the focus and Enter launched the game while the player was
+	# still reading. Hand the focus to BACK instead.
+	_start.release_focus()
+	_back.grab_focus()
+
+
+func _close_instructions() -> void:
+	AudioManager.play_sfx("ui", -4.0)
+	_instructions.visible = false
+	_start.grab_focus()
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	if _instructions.visible and event.is_action_pressed("ui_cancel"):
+		get_viewport().set_input_as_handled()
+		_close_instructions()
+	elif event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_F11:
+		Settings.toggle_fullscreen()
+
+
+func _on_start() -> void:
+	AudioManager.play_sfx("ui", -4.0)
+	GameState.start_area(FIRST_AREA)
+
+
+func _on_quit() -> void:
+	AudioManager.play_sfx("ui", -4.0)
+	get_tree().quit()
