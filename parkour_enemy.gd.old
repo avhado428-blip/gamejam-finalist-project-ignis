@@ -1,0 +1,181 @@
+class_name ParkourEnemy
+extends Node3D
+## Something that was already standing here.
+##
+## The room's creatures are the flat game's own sheets — in both versions of them —
+## so Q is not a screen effect in here either: switch worlds and what is hunting you
+## changes shape with the room, and a creature that belongs to the other world is not
+## standing in this one at all. Three hits from the bolt puts one down, visibly, with
+## its own death frames and its own sparks. It comes back a while later, a long way
+## from wherever the player is, so the room never runs out of things to be wary of.
+
+const ART := "res://assets/enemies/reality_enemy/%s_%s.png"
+const FRAMES := {"idle": 4, "move": 6, "death": 6}
+const FPS := {"idle": 6.0, "move": 9.0, "death": 10.0}
+## The sheets are 32x40 frames; this puts a creature at one and a half metres.
+const PIXEL := 0.0375
+const EYE_HEIGHT := 0.75
+const TOUCH_RADIUS := 0.8
+const DEATH_TIME := 0.62
+const RESPAWN := 8.0
+## How far away the player has to be before one of these dares come back.
+const KEEP_AWAY := 7.0
+
+const DEATH_FX := "res://assets/effects/enemy_death_effect.png"
+const DEATH_FX_FRAMES := 6
+
+enum State { ALIVE, DYING, GONE }
+
+var _sprite: Sprite3D
+var _touch: Area3D
+var _state: int = State.ALIVE
+var _anim: String = "move"
+var _suffix: String = "perceived"
+var _frame: float = 0.0
+var _timer: float = 0.0
+var _bob: float = 0.0
+var _dir: float = 1.0
+var _home: Vector3 = Vector3.ZERO
+var _patrol: float = 0.0
+var _speed: float = 1.6
+var _only: String = ""
+
+
+## One row of the room's creature table.
+func setup(cfg: Dictionary) -> void:
+	add_to_group("enemy3d")
+	_home = position
+	_patrol = float(cfg.get("patrol", 0.0))
+	_speed = float(cfg.get("speed", 1.6))
+	_only = str(cfg.get("only", ""))
+	_dir = -1.0 if bool(cfg.get("flip", false)) else 1.0
+
+	_sprite = Sprite3D.new()
+	_sprite.pixel_size = PIXEL
+	_sprite.position = Vector3(0.0, EYE_HEIGHT, 0.0)
+	_sprite.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	_sprite.shaded = false
+	_sprite.alpha_cut = SpriteBase3D.ALPHA_CUT_DISCARD
+	_sprite.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
+	add_child(_sprite)
+
+	_touch = Area3D.new()
+	_touch.collision_layer = 0
+	_touch.collision_mask = 1
+	var shape := CollisionShape3D.new()
+	var ball := SphereShape3D.new()
+	ball.radius = TOUCH_RADIUS
+	shape.shape = ball
+	shape.position = Vector3(0.0, EYE_HEIGHT, 0.0)
+	_touch.add_child(shape)
+	add_child(_touch)
+
+	_play(_anim)
+	react(RealityManager.current_reality)
+
+
+func _process(delta: float) -> void:
+	if GameState.is_paused:
+		return
+	match _state:
+		State.ALIVE:
+			_drift(delta)
+			_advance(delta)
+		State.DYING:
+			_timer += delta
+			_advance(delta)
+			if _timer >= DEATH_TIME:
+				_state = State.GONE
+				_timer = 0.0
+				visible = false
+				_touch.monitoring = false
+		State.GONE:
+			_timer += delta
+			if _timer >= RESPAWN and _player_away():
+				_revive()
+
+
+func _physics_process(_delta: float) -> void:
+	if _state != State.ALIVE or not visible or GameState.is_paused:
+		return
+	for node in _touch.get_overlapping_bodies():
+		var body := node as ParkourPlayer
+		if body != null:
+			body.hit(global_position)
+
+
+## Wandering back and forth over its stretch of nothing, a little above the floor and
+## bobbing, the way the flat game's creatures breathe.
+func _drift(delta: float) -> void:
+	if _patrol > 0.0:
+		position.x += _dir * _speed * delta
+		if absf(position.x - _home.x) > _patrol:
+			position.x = clampf(position.x, _home.x - _patrol, _home.x + _patrol)
+			_dir = -_dir
+		_bob += delta
+		position.y = _home.y + sin(_bob * 1.5) * 0.18
+		_sprite.flip_h = _dir < 0.0
+
+
+# ── being put down, and coming back ────────────────────────────────────────
+
+## Called by the bolt. Its own death frames, from the world it was standing in.
+func hit() -> void:
+	if _state != State.ALIVE:
+		return
+	_state = State.DYING
+	_timer = 0.0
+	_touch.monitoring = false
+	_play("death")
+	AudioManager.play_sfx("death", -6.0, 1.5)
+	ParkourBeam.effect(get_parent(), DEATH_FX, DEATH_FX_FRAMES,
+		global_position + Vector3(0.0, EYE_HEIGHT, 0.0), 0.28,
+		Color(1.0, 0.62, 0.68), 0.06)
+	var room := get_tree().get_first_node_in_group("parkour_fx") as Parkour3D
+	if room != null:
+		room.pulse_glitch(0.3)
+
+
+func _player_away() -> bool:
+	var player := get_tree().get_first_node_in_group("player3d") as Node3D
+	return player == null or player.global_position.distance_to(global_position) > KEEP_AWAY
+
+
+func _revive() -> void:
+	_state = State.ALIVE
+	_timer = 0.0
+	_frame = 0.0
+	position = _home
+	_dir = 1.0
+	_play("move")
+	react(RealityManager.current_reality)
+
+
+func _play(anim: String) -> void:
+	_anim = anim
+	_frame = 0.0
+	_sprite.hframes = int(FRAMES[anim])
+	_sprite.frame = 0
+	_sprite.texture = load(ART % [anim, _suffix]) as Texture2D
+
+
+func _advance(delta: float) -> void:
+	var count: int = int(FRAMES[_anim])
+	if count <= 1:
+		return
+	_frame += delta * float(FPS[_anim])
+	# the death plays once and stops on its last frame rather than looping
+	if _anim == "death":
+		_sprite.frame = mini(int(_frame), count - 1)
+	else:
+		_sprite.frame = int(_frame) % count
+
+
+## Which version of itself is standing here, and whether it is standing here at all.
+func react(reality: int) -> void:
+	_suffix = "true" if reality == RealityManager.Reality.TRUE else "perceived"
+	var here: bool = _only == "" or (_only == "true") == (reality == RealityManager.Reality.TRUE)
+	if _sprite != null:
+		_play(_anim)
+	visible = here and _state != State.GONE
+	_touch.monitoring = here and _state == State.ALIVE

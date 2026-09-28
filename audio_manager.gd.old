@@ -1,0 +1,189 @@
+extends Node
+## AudioManager — every sound the game makes. FINAL NAME.
+##
+## No audio files ship with the placeholder build, so the whole library is
+## synthesised at startup:
+##   SFX   — short PCM tones/sweeps/noise
+##   MUSIC — three seamless 4 s drones that share a dedicated "Music" bus
+##
+## The bus carries an AudioEffectDistortion whose wet/drive is driven per area,
+## so the score literally comes apart as the player gets closer to the end.
+## Swap _build_library() for real .ogg/.wav resources later — callers never change.
+
+const RATE := 22050
+const POOL_SIZE := 14
+const MUSIC_BUS := "Music"
+
+var _sounds: Dictionary = {}
+var _players: Array = []
+var _next: int = 0
+var _music: AudioStreamPlayer
+var _distortion: AudioEffectDistortion
+var _current_music: String = ""
+
+
+func _ready() -> void:
+	for i in range(POOL_SIZE):
+		var p := AudioStreamPlayer.new()
+		add_child(p)
+		_players.append(p)
+	_setup_music_bus()
+	_music = AudioStreamPlayer.new()
+	_music.bus = MUSIC_BUS
+	_music.volume_db = -15.0
+	add_child(_music)
+	_build_library()
+
+
+func _setup_music_bus() -> void:
+	var idx := AudioServer.get_bus_index(MUSIC_BUS)
+	if idx == -1:
+		AudioServer.add_bus()
+		idx = AudioServer.bus_count - 1
+		AudioServer.set_bus_name(idx, MUSIC_BUS)
+	_distortion = AudioEffectDistortion.new()
+	_distortion.mode = AudioEffectDistortion.MODE_LOFI
+	_distortion.drive = 0.0
+	_distortion.post_gain = 0.0
+	AudioServer.add_bus_effect(idx, _distortion)
+	AudioServer.set_bus_effect_enabled(idx, 0, false)
+
+
+## 0 = clean, 1 = badly broken.
+func set_music_distortion(value: float) -> void:
+	if _distortion == null:
+		return
+	var v := clampf(value, 0.0, 1.0)
+	_distortion.drive = v * 0.85
+	_distortion.post_gain = -6.0 * v
+	# AudioEffectDistortion has no wet/dry mix, so bypass it entirely when clean.
+	var idx := AudioServer.get_bus_index(MUSIC_BUS)
+	if idx >= 0:
+		AudioServer.set_bus_effect_enabled(idx, 0, v > 0.01)
+
+
+func play_sfx(sfx_name: String, volume_db: float = 0.0, pitch: float = 1.0) -> void:
+	if not _sounds.has(sfx_name):
+		return
+	var p: AudioStreamPlayer = _players[_next]
+	_next = (_next + 1) % POOL_SIZE
+	p.stream = _sounds[sfx_name]
+	p.volume_db = volume_db
+	p.pitch_scale = pitch
+	p.play()
+
+
+func play_music(music_name: String) -> void:
+	if not _sounds.has(music_name) or _current_music == music_name:
+		return
+	_current_music = music_name
+	_music.stream = _sounds[music_name]
+	_music.play()
+
+
+func stop_music() -> void:
+	_music.stop()
+	_current_music = ""
+
+
+func _build_library() -> void:
+	_sounds["jump"] = _tone(520.0, 0.11, "square", 0.35)
+	_sounds["land"] = _tone(180.0, 0.09, "noise", 0.28)
+	_sounds["shift"] = _sweep(900.0, 220.0, 0.32, "tri", 0.40)
+	_sounds["shift_dull"] = _sweep(240.0, 120.0, 0.30, "sine", 0.22)
+	_sounds["interact"] = _tone(740.0, 0.08, "square", 0.30)
+	_sounds["switch"] = _sweep(520.0, 1040.0, 0.22, "square", 0.32)
+	_sounds["checkpoint"] = _sweep(440.0, 880.0, 0.30, "sine", 0.35)
+	_sounds["hurt"] = _sweep(400.0, 90.0, 0.22, "square", 0.40)
+	_sounds["death"] = _sweep(300.0, 60.0, 0.60, "tri", 0.40)
+	_sounds["ui"] = _tone(880.0, 0.05, "square", 0.25)
+	_sounds["enemy_attack"] = _sweep(600.0, 160.0, 0.18, "square", 0.34)
+	_sounds["enemy_hit"] = _tone(300.0, 0.10, "noise", 0.35)
+	_sounds["enemy_die"] = _sweep(520.0, 70.0, 0.45, "tri", 0.40)
+	_sounds["glitch"] = _tone(1400.0, 0.14, "noise", 0.22)
+	_sounds["slash"] = _sweep(2800.0, 900.0, 0.16, "noise", 0.34)
+	_sounds["wet"] = _tone(150.0, 0.30, "noise", 0.32)
+	_sounds["thud"] = _tone(72.0, 0.42, "noise", 0.36)
+
+	# ── the room itself: things heard from somewhere else ──
+	_sounds["whisper"] = _sweep(340.0, 165.0, 1.35, "noise", 0.10)
+	_sounds["breath"] = _sweep(240.0, 150.0, 1.70, "noise", 0.085)
+	_sounds["drip"] = _sweep(880.0, 380.0, 0.13, "sine", 0.16)
+	_sounds["creak"] = _sweep(150.0, 92.0, 0.80, "tri", 0.14)
+	_sounds["stone"] = _tone(88.0, 0.45, "noise", 0.18)
+	_sounds["heartbeat"] = _sweep(130.0, 58.0, 0.34, "sine", 0.26)
+	_sounds["sting"] = _sweep(1200.0, 140.0, 0.90, "tri", 0.20)
+
+	_sounds["music_calm"] = _drone(55.0, 4.0, 0.25, 0.0)
+	_sounds["music_tense"] = _drone(58.0, 4.0, 0.50, 0.015)
+	_sounds["music_broken"] = _drone(61.0, 4.0, 0.75, 0.050)
+
+
+func _tone(freq: float, dur: float, kind: String, gain: float) -> AudioStreamWAV:
+	return _render(dur, gain, func(t: float) -> float:
+		return _osc_phase(freq * t, kind))
+
+
+func _sweep(f0: float, f1: float, dur: float, kind: String, gain: float) -> AudioStreamWAV:
+	# Linear chirp with the phase solved analytically, so no state has to be
+	# carried between samples: phase_cycles(t) = f0*t + (f1-f0)*t^2 / (2*dur)
+	return _render(dur, gain, func(t: float) -> float:
+		var cycles: float = f0 * t + (f1 - f0) * t * t / (2.0 * dur)
+		return _osc_phase(cycles, kind))
+
+
+func _osc_phase(cycles: float, kind: String) -> float:
+	var ph := fposmod(cycles, 1.0)
+	match kind:
+		"square":
+			return 1.0 if ph < 0.5 else -1.0
+		"tri":
+			return absf(ph * 4.0 - 2.0) - 1.0
+		"noise":
+			return randf() * 2.0 - 1.0
+		_:
+			return sin(ph * TAU)
+
+
+## Seamless loop: every partial completes a whole number of cycles in `dur`,
+## so the end of the buffer joins the beginning without a click.
+func _drone(base: float, dur: float, wobble: float, noise_amt: float) -> AudioStreamWAV:
+	var n := int(RATE * dur)
+	var data := PackedByteArray()
+	data.resize(n * 2)
+	for i in range(n):
+		var t := float(i) / float(RATE)
+		var s := 0.0
+		s += sin(TAU * base * t) * 0.50
+		s += sin(TAU * base * 1.5 * t + 0.7) * 0.28
+		s += sin(TAU * base * 2.0 * t + 1.9) * 0.16
+		s *= 0.60 + 0.40 * sin(TAU * wobble * t)
+		s += (randf() * 2.0 - 1.0) * noise_amt
+		data.encode_s16(i * 2, int(clampf(s * 0.35, -1.0, 1.0) * 32767.0))
+	var st := AudioStreamWAV.new()
+	st.format = AudioStreamWAV.FORMAT_16_BITS
+	st.mix_rate = RATE
+	st.stereo = false
+	st.data = data
+	st.loop_mode = AudioStreamWAV.LOOP_FORWARD
+	st.loop_begin = 0
+	st.loop_end = n
+	return st
+
+
+func _render(dur: float, gain: float, fn: Callable) -> AudioStreamWAV:
+	var n := int(RATE * dur)
+	var data := PackedByteArray()
+	data.resize(n * 2)
+	for i in range(n):
+		var t := float(i) / float(RATE)
+		var env: float = 1.0 - float(i) / float(n)
+		env = env * env
+		var v: float = clampf(float(fn.call(t)) * env * gain, -1.0, 1.0)
+		data.encode_s16(i * 2, int(v * 32767.0))
+	var st := AudioStreamWAV.new()
+	st.format = AudioStreamWAV.FORMAT_16_BITS
+	st.mix_rate = RATE
+	st.stereo = false
+	st.data = data
+	return st

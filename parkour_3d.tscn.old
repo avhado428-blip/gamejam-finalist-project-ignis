@@ -1,0 +1,78 @@
+[gd_scene load_steps=9 format=4]
+
+[ext_resource type="Script" path="res://scenes/parkour_3d.gd" id="1_room"]
+[ext_resource type="Script" path="res://scenes/parkour_player.gd" id="2_body"]
+[ext_resource type="Script" path="res://scenes/parkour_finish.gd" id="3_end"]
+
+[sub_resource type="Environment" id="Env_room"]
+background_mode = 1
+background_color = Color(0.024, 0.012, 0.043, 1)
+ambient_light_source = 2
+ambient_light_color = Color(0.48, 0.45, 0.72, 1)
+ambient_light_energy = 0.45
+fog_enabled = true
+fog_light_color = Color(0.06, 0.05, 0.14, 1)
+fog_density = 0.012
+
+[sub_resource type="CapsuleShape3D" id="Cap_you"]
+radius = 0.38
+height = 1.8
+
+[sub_resource type="StandardMaterial3D" id="Mat_end"]
+albedo_color = Color(0.925, 0.129, 0.161, 1)
+emission_enabled = true
+emission = Color(0.925, 0.129, 0.161, 1)
+
+[sub_resource type="BoxMesh" id="Mesh_end"]
+size = Vector3(4, 3.4, 0.4)
+
+[sub_resource type="BoxShape3D" id="Box_end"]
+size = Vector3(4, 3.4, 0.6)
+
+[node name="Parkour3D" type="Node3D"]
+script = ExtResource("1_room")
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Env_room")
+
+[node name="Sun" type="DirectionalLight3D" parent="."]
+rotation_degrees = Vector3(-18, 34, 0)
+light_color = Color(0.65, 0.7, 1, 1)
+light_energy = 0.8
+shadow_enabled = true
+
+[node name="Course" type="Node3D" parent="."]
+
+[node name="Player3D" type="CharacterBody3D" parent="."]
+position = Vector3(0, 1, 1.4)
+script = ExtResource("2_body")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Player3D"]
+shape = SubResource("Cap_you")
+
+[node name="Head" type="Node3D" parent="Player3D"]
+position = Vector3(0, 0.72, 0)
+
+[node name="Camera3D" type="Camera3D" parent="Player3D/Head"]
+current = true
+fov = 78.0
+
+[node name="FinishLine" type="Area3D" parent="."]
+position = Vector3(0, 6.2, -97.9)
+script = ExtResource("3_end")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="FinishLine"]
+shape = SubResource("Box_end")
+
+[node name="Slab" type="MeshInstance3D" parent="FinishLine"]
+mesh = SubResource("Mesh_end")
+material_override = SubResource("Mat_end")
+
+[node name="Fade" type="CanvasLayer" parent="."]
+layer = 30
+
+[node name="Rect" type="ColorRect" parent="Fade"]
+anchor_right = 1.0
+anchor_bottom = 1.0
+color = Color(0.96, 0.95, 0.94, 1)
+mouse_filter = 2

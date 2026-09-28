@@ -1,0 +1,251 @@
+class_name ParkourBeam
+extends Node3D
+## The staff's answer, once the room has let the player have one.
+##
+## A strike, not a throwing: lightning does not cross a room, it is simply *there*,
+## between the head of the staff and whatever was in the way, for a fifth of a second,
+## and then gone. Nothing in it is new art — the bolt is a ribbon of primitive geometry
+## and the hit is the flat game's sparks.
+##
+## It asks the room itself what it struck: the nearest creature the strike passes
+## through, or the first solid thing behind it. So a shot at a creature standing in the
+## other world goes through the floor that is not there instead of stopping on it.
+
+## How far a strike can reach, and how long it is shown for.
+const RANGE := 34.0
+const LIFE := 0.22
+## How close the strike has to pass to a creature to have hit it.
+const HIT_RADIUS := 0.75
+## How many kinks the bolt has, how far they pull sideways, and how often it is
+## redrawn while it lives — which is what makes it crackle instead of sitting still.
+const SEGS := 14
+const KINK := 0.5
+const CRACKLE := 0.04
+
+const ART_SPARK := "res://assets/effects/sparks.png"
+const SPARK_FRAMES := 8
+
+## The bolt's colour: cold, because it comes out of the sky the true world keeps.
+const CORE := Color(0.88, 0.95, 1.00)
+const EDGE := Color(0.34, 0.66, 1.00)
+## The bolt's body. A line of light on its own is invisible: this room is pale stone
+## in one world and near-black in the other, and white vanishes on both. So every
+## strike is dark first and bright inside it, which is how lightning is drawn and how
+## it stays legible whichever world the player is standing in.
+const SHADE := Color(0.03, 0.05, 0.12)
+const FLASH := 5.0
+
+var _from: Vector3 = Vector3.ZERO
+var _to: Vector3 = Vector3.FORWARD
+var _life: float = 0.0
+var _next: float = 0.0
+## One entry per ribbon of the bolt: [the node, its mesh, how wide it is drawn].
+var _ribbons: Array = []
+var _light: OmniLight3D
+
+
+## Handed where the staff is and where the player was looking. Called after the node
+## is in the tree, so the strike can ask the room what is in the way.
+func setup(from: Vector3, to: Vector3) -> void:
+	_from = from
+	_to = to
+	# the ribbons are written in world coordinates, so this node has to stay at the
+	# origin: standing it on the muzzle would draw every strike a second time, in the
+	# wrong place, and the bolt would land behind the wall it hit
+	global_position = Vector3.ZERO
+	_build()
+	_strike()
+
+
+func _build() -> void:
+	print("[beam] built at ", global_position, " ribbons=", _ribbons.size())
+	_ribbon(SHADE, 0.20, 0.0, false)
+	_ribbon(EDGE, 0.10, 2.0, false)
+	_ribbon(CORE, 0.05, 6.0, false)
+	_light = OmniLight3D.new()
+	_light.light_color = CORE
+	_light.light_energy = FLASH
+	_light.omni_range = 16.0
+	_light.shadow_enabled = false
+	add_child(_light)
+
+
+## One ribbon of the bolt. There are two: a thin white core, and a wide cold glow
+## around it. That is all a bolt of lightning is.
+func _ribbon(col: Color, width: float, energy: float, additive: bool) -> void:
+	var mi := MeshInstance3D.new()
+	var mesh := ImmediateMesh.new()
+	mi.mesh = mesh
+	var mat := StandardMaterial3D.new()
+	mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	mat.albedo_color = col
+	mat.emission_enabled = true
+	mat.emission = col
+	mat.emission_energy_multiplier = energy
+	mat.cull_mode = BaseMaterial3D.CULL_DISABLED
+	if additive:
+		mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+		mat.blend_mode = BaseMaterial3D.BLEND_MODE_ADD
+		mat.albedo_color = Color(col.r, col.g, col.b, 0.55)
+	mi.material_override = mat
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(mi)
+	_ribbons.append([mi, mesh, width])
+
+
+## Draw the bolt, and keep redrawing it: the kinks are new every time, which is what
+## reads as a crackle rather than a bar of light.
+func _draw_bolt() -> void:
+	var span: Vector3 = _to - _from
+	if span.length_squared() < 0.0001:
+		return
+	var dir: Vector3 = span.normalized()
+	# which way the ribbon is wide: across the bolt and across the view, so it always
+	# shows its width instead of turning edge-on and disappearing
+	var cam := get_viewport().get_camera_3d()
+	var view: Vector3 = Vector3.FORWARD
+	if cam != null:
+		view = (cam.global_position - _from).normalized()
+	var wide: Vector3 = dir.cross(view)
+	if wide.length_squared() < 0.0001:
+		wide = dir.cross(Vector3.UP)
+	wide = wide.normalized()
+	for k in _ribbons.size():
+		var entry: Array = _ribbons[k]
+		var mesh: ImmediateMesh = entry[1]
+		var w: float = entry[2]
+		# every layer sits a hair nearer the camera than the one under it, so the bands
+		# stack instead of fighting each other for the same depth
+		var lift: Vector3 = view * (0.006 * float(k))
+		mesh.clear_surfaces()
+		mesh.surface_begin(Mesh.PRIMITIVE_TRIANGLE_STRIP)
+		for i in SEGS + 1:
+			var t := float(i) / float(SEGS)
+			var p: Vector3 = _from + span * t + lift
+			if i > 0 and i < SEGS:
+				# pulled sideways, most in the middle and not at all at either end, so
+				# the bolt stays stuck to the staff and to the thing it struck
+				p += wide * randf_range(-1.0, 1.0) * KINK * sin(t * PI)
+			# thin where it leaves the staff, widest where it lands, so the end near
+			# the eye is a whip of light rather than a slab across the corner
+			var half: float = w * (0.3 + 0.7 * t)
+			mesh.surface_add_vertex(p - wide * half)
+			mesh.surface_add_vertex(p + wide * half)
+		mesh.surface_end()
+
+
+func _process(delta: float) -> void:
+	_life += delta
+	if _life >= LIFE:
+		queue_free()
+		return
+	if _life >= _next:
+		_next = _life + CRACKLE
+		_draw_bolt()
+
+
+# ── what it strikes ────────────────────────────────────────────────────────
+
+## Where the shot stopped and what it found there, worked out in the single frame it
+## was fired in: lightning does not travel, so the hit is resolved before it is ever
+## drawn.
+func _strike() -> void:
+	var dir: Vector3 = _to - _from
+	if dir.length_squared() < 0.0001:
+		dir = Vector3.FORWARD
+		_to = _from + dir
+	dir = dir.normalized()
+	var reach: float = minf(RANGE, _from.distance_to(_to) + 1.5)
+	var end: Vector3 = _from + dir * reach
+
+	var wall := _solid_hit(_from, end)
+	if not wall.is_empty():
+		end = wall["position"]
+	var prey := _creature_on_the_way(_from, end)
+	if prey != null:
+		end = prey.global_position + Vector3(0.0, 0.75, 0.0)
+		prey.call("hit")
+		_spark_at(end)
+		if _light != null:
+			_light.global_position = end
+	elif _light != null:
+		# nothing to strike: the flash goes dim, so a bolt into empty air does not
+		# light the whole hall up
+		_light.global_position = end
+		_light.light_energy = FLASH * 0.35
+	_to = end
+	_draw_bolt()
+
+
+## Creatures are not physics bodies, so the bolt asks the creatures themselves which of
+## them the strike passed through, and takes the nearest one.
+func _creature_on_the_way(a: Vector3, b: Vector3) -> Node3D:
+	var best: Node3D = null
+	var best_d := INF
+	for node in get_tree().get_nodes_in_group("enemy3d"):
+		var other := node as Node3D
+		if other == null or not other.visible:
+			continue
+		var middle: Vector3 = other.global_position + Vector3(0.0, 0.75, 0.0)
+		var d: float = _distance_to_segment(middle, a, b)
+		if d <= HIT_RADIUS and d < best_d:
+			best = other
+			best_d = d
+	return best
+
+
+func _distance_to_segment(p: Vector3, a: Vector3, b: Vector3) -> float:
+	var ab: Vector3 = b - a
+	var len_sq: float = ab.length_squared()
+	if len_sq < 0.0001:
+		return p.distance_to(a)
+	var t: float = clampf((p - a).dot(ab) / len_sq, 0.0, 1.0)
+	return p.distance_to(a + ab * t)
+
+
+## Everything solid in the room is on physics layer 1. The floor a creature is standing
+## in belongs to the *other* world, so it is not on layer 1 at all and a strike passes
+## straight through it.
+func _solid_hit(a: Vector3, b: Vector3) -> Dictionary:
+	var space := get_world_3d().direct_space_state
+	if space == null:
+		return {}
+	var query := PhysicsRayQueryParameters3D.create(a, b, 1)
+	query.collide_with_areas = false
+	return space.intersect_ray(query)
+
+
+# ── the room's effects, which are the flat game's ──────────────────────────
+
+## One of the flat game's effect strips, played once and freed. The bolt, the
+## creatures and the hand all call this one copy of it, so there is a single way in
+## the room to put a flat-game effect into a place that has a third dimension.
+##
+## It goes under whatever host is passed rather than under the thing that caused it,
+## because that thing is usually about to stop existing.
+static func effect(host: Node, path: String, frames: int, pos: Vector3, size: float,
+		col: Color, step: float = 0.045) -> void:
+	if host == null or frames <= 1:
+		return
+	var sprite := Sprite3D.new()
+	sprite.texture = load(path) as Texture2D
+	sprite.hframes = frames
+	sprite.pixel_size = size
+	sprite.billboard = BaseMaterial3D.BILLBOARD_ENABLED
+	sprite.shaded = false
+	sprite.alpha_cut = SpriteBase3D.ALPHA_CUT_DISCARD
+	sprite.texture_filter = BaseMaterial3D.TEXTURE_FILTER_NEAREST
+	sprite.modulate = col
+	host.add_child(sprite)
+	sprite.global_position = pos
+
+	var t := sprite.create_tween()
+	for i in range(1, frames):
+		t.tween_callback(func() -> void: sprite.frame = i)
+		t.tween_interval(step)
+	t.tween_callback(sprite.queue_free)
+
+
+## The bolt's own spark, where it stopped being a bolt.
+func _spark_at(pos: Vector3) -> void:
+	effect(get_parent(), ART_SPARK, SPARK_FRAMES, pos, 0.12, Color(1.0, 0.62, 0.68))

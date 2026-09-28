@@ -1,0 +1,82 @@
+[gd_scene load_steps=8 format=4]
+
+[ext_resource type="Script" path="res://scenes/parkour_3d.gd" id="1_room"]
+[ext_resource type="Script" path="res://scenes/parkour_player.gd" id="2_body"]
+[ext_resource type="Script" path="res://scenes/parkour_finish.gd" id="3_end"]
+
+[sub_resource type="Environment" id="Env_room"]
+background_mode = 1
+background_color = Color(0.024, 0.008, 0.008, 1)
+ambient_light_source = 2
+ambient_light_color = Color(0.66, 0.21, 0.17, 1)
+ambient_light_energy = 0.42
+glow_enabled = true
+glow_intensity = 0.5
+glow_bloom = 0.15
+glow_hdr_threshold = 0.8
+glow_blend_mode = 1
+fog_enabled = true
+fog_light_color = Color(0.11, 0.022, 0.018, 1)
+fog_density = 0.01
+ssr_enabled = true
+ssr_max_steps = 32
+ssr_fade_in = 15.0
+ssr_fade_out = 50.0
+
+[sub_resource type="CapsuleShape3D" id="Cap_you"]
+radius = 0.38
+height = 1.8
+
+[sub_resource type="BoxShape3D" id="Box_end"]
+size = Vector3(5, 4.6, 0.7)
+
+[node name="Parkour3D" type="Node3D"]
+script = ExtResource("1_room")
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="."]
+environment = SubResource("Env_room")
+
+[node name="Sun" type="DirectionalLight3D" parent="."]
+rotation_degrees = Vector3(-54, 34, 0)
+light_color = Color(1, 0.42, 0.34, 1)
+light_energy = 0.26
+shadow_enabled = false
+
+[node name="Probe" type="ReflectionProbe" parent="."]
+interior = true
+size = Vector3(30, 16, 30)
+origin_offset = Vector3(0, 7, 0)
+ambient_mode = 0
+box_projection = false
+
+[node name="Player3D" type="CharacterBody3D" parent="."]
+position = Vector3(0, 1, 14)
+script = ExtResource("2_body")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Player3D"]
+shape = SubResource("Cap_you")
+
+[node name="Head" type="Node3D" parent="Player3D"]
+position = Vector3(0, 0.72, 0)
+
+[node name="Camera3D" type="Camera3D" parent="Player3D/Head"]
+current = true
+fov = 78.0
+
+[node name="FinishLine" type="Area3D" parent="."]
+position = Vector3(0, 3.4, -24.7)
+monitoring = false
+script = ExtResource("3_end")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="FinishLine"]
+shape = SubResource("Box_end")
+disabled = true
+
+[node name="Fade" type="CanvasLayer" parent="."]
+layer = 30
+
+[node name="Rect" type="ColorRect" parent="Fade"]
+anchor_right = 1.0
+anchor_bottom = 1.0
+color = Color(0.96, 0.95, 0.94, 1)
+mouse_filter = 2

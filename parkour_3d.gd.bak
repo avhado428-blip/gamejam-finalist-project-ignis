@@ -1,0 +1,522 @@
+class_name Parkour3D
+extends Node3D
+## The room the game stops lying in.
+##
+## This is not a course, and it is deliberately not trying to be one. It is *inside* the
+## picture at last: one round temple with a solid floor from wall to wall, one gate, and
+## the staff standing in it. Everything here is built from a table or from ParkourHall, so
+## the room can be read and tuned as one thing, and it opens in the true world, because
+## the true world is what the hall is: the pale one is the picture that has been taken off
+## it, and Q is what puts it back on.
+##
+## The rule the whole room runs on is one sentence long: **nothing in here arrives until
+## the staff does.** The hall is empty when the player walks in, the click does nothing,
+## and the fight does not exist yet. Picking the staff up is the trigger for all of it —
+## the floor opens and the creatures come up out of it, the ceiling opens and the thing
+## that owns this room comes down out of it, and the keys line finally admits there is a
+## weapon in the player's hand. The staff is not a power-up. It is the door being opened.
+
+## What the room says on arrival, one line at a time, and how long each holds.
+@export var entry_lines: PackedStringArray = [
+	"YOU'RE REALLY HERE NOW.",
+	"THE ONE DOOR OUT OF THIS ROOM IS YOURS, AND IT IS STANDING IN THE GATE.",
+]
+@export var entry_hold: float = 1.4
+@export var skippable: bool = true
+
+const FADE_IN := 0.7
+
+## Where the creatures come up, in the order they come up: x and z on the floor of the
+## room, how fast the thing walks at whoever is holding the staff, and how long it waits
+## under the floor first. They are spread round the ring and staggered, because eight
+## creatures standing up at once is a spawn and eight creatures standing up one after
+## another is a room that had them all along.
+const ENEMIES: Array = [
+	{"x": 0.0, "z": -13.0, "speed": 1.9, "delay": 0.1},
+	{"x": 13.5, "z": -5.0, "speed": 1.7, "delay": 0.7, "only": "true"},
+	{"x": -14.0, "z": -9.0, "speed": 1.8, "delay": 1.3},
+	{"x": 16.0, "z": 6.0, "speed": 1.6, "delay": 1.9, "only": "perceived"},
+	{"x": -17.0, "z": 3.0, "speed": 2.0, "delay": 2.5},
+	{"x": 5.0, "z": -19.0, "speed": 1.7, "delay": 3.1},
+	{"x": -7.0, "z": 14.0, "speed": 1.8, "delay": 3.7, "only": "true"},
+	{"x": 12.0, "z": 15.0, "speed": 1.6, "delay": 4.3},
+]
+
+## The hall's own two colours. The true world is what this room is: a bleeding temple lit
+## from the inside. The false one is the same hall under a picture of paper, which is all
+## the false world ever was — the floor stays lit, the walls go pale, and the fog closes in
+## so the room gets smaller without a single thing in it changing shape.
+const PALETTE_PERCEIVED := {
+	"surface": Color(1.55, 1.52, 1.48),
+	"background": Color(0.90, 0.89, 0.86),
+	"ambient": Color(1.0, 0.97, 0.94),
+	"ambient_energy": 0.34,
+	"sun": Color(1.0, 0.96, 0.90),
+	"sun_energy": 0.70,
+	"fog": 0.006,
+	"fog_color": Color(0.87, 0.86, 0.84),
+	"hands": Color(0.88, 0.86, 0.82),
+}
+const PALETTE_TRUE := {
+	"surface": Color(1.05, 0.26, 0.20),
+	"background": Color(0.024, 0.008, 0.008),
+	"ambient": Color(0.66, 0.21, 0.17),
+	"ambient_energy": 0.42,
+	"sun": Color(1.0, 0.42, 0.34),
+	"sun_energy": 0.26,
+	"fog": 0.010,
+	"fog_color": Color(0.11, 0.022, 0.018),
+	"hands": Color(0.62, 0.30, 0.26),
+}
+
+## The room's own HUD, and the bars its speech stands on.
+const COL_WORD := Color(0.941, 0.129, 0.145, 0.98)
+const COL_OUTLINE := Color(0.015, 0.015, 0.02, 0.95)
+const COL_KEYS := Color(0.933, 0.910, 0.847, 0.62)
+const COL_PERCEIVED := Color(1.0, 0.98, 0.94, 0.85)
+const COL_TRUE := Color(0.55, 0.85, 1.0, 0.85)
+const COL_BAR := Color(0.0, 0.0, 0.0, 0.78)
+
+var _sun: DirectionalLight3D
+var _env: Environment
+var _player: ParkourPlayer
+var _layer: CanvasLayer
+var _narration: Label
+var _narration_row: CenterContainer
+var _prompt: Label
+var _prompt_row: CenterContainer
+var _world: Label
+var _keys: Label
+var _last_bar: CenterContainer
+var _hall: ParkourHall
+var _staff: ParkourStaff
+var _boss: ParkourHand
+var _enemies: Array[ParkourEnemy] = []
+var _lamps: Array[ColorRect] = []
+## Whether the staff is off its stand: nothing the room does after that is reversible, and
+## nothing before it happens twice.
+var _armed: bool = false
+## Whether the thing in the ceiling has been put down, and with it the one door.
+var _opened: bool = false
+## One tear for the whole room; everything else in here asks it to strike.
+var _glitch: Glitch
+var _advance: bool = false
+
+
+func _ready() -> void:
+	GameState.current_level = "parkour"
+	# This room is not in AREA_SEQUENCE, so the run index is still sitting on the
+	# last area — which is exactly what makes AdvanceArea the right win condition
+	# here. A run started straight from this scene has to be told the same thing, or
+	# finishing would drop the player back near the start of the game.
+	var tear: int = GameState.AREA_SEQUENCE.find("res://levels/area_07_the_tear.tscn")
+	GameState.area_index = tear if tear >= 0 else GameState.AREA_SEQUENCE.size() - 1
+	GameState.set_objective("")
+	EventManager.hint_changed.emit("")
+
+	add_to_group("parkour_fx")
+	_glitch = Glitch.new()
+	# nothing at rest, and barely anything on its own: this room is the one the game
+	# stops lying in, so the tear only shows up in here when something is struck
+	_glitch.intensity = 0.0
+	_glitch.calm_gap = Vector2(6.0, 12.0)
+	add_child(_glitch)
+
+	# the full-screen overlay that brings the room up out of the black is a Control,
+	# and a Control eats mouse motion before the player ever sees it: that is what a
+	# mouse-look that does not look feels like
+	var fade := get_node_or_null("Fade/Rect") as ColorRect
+	if fade != null:
+		fade.mouse_filter = Control.MOUSE_FILTER_IGNORE
+
+	_sun = get_node_or_null("Sun") as DirectionalLight3D
+	var world_env := get_node_or_null("WorldEnvironment") as WorldEnvironment
+	_env = world_env.environment if world_env != null else null
+	_player = get_tree().get_first_node_in_group("player3d") as ParkourPlayer
+
+	# this room opens in the true world, because it *is* the true world: the picture has
+	# been taken off it and what was under the picture is a temple that bleeds. Q puts the
+	# picture back on for a while, which is the only thing Q has ever done.
+	if RealityManager.is_perceived():
+		RealityManager.set_reality(RealityManager.Reality.TRUE, true)
+
+	_build_ground()
+	_build_backdrop()
+	_build_threats()
+	_build_ui()
+	RealityManager.reality_changed.connect(_apply_world)
+	RealityManager.reality_changed.connect(_react_room)
+	_apply_world(RealityManager.current_reality)
+
+	if _player != null:
+		_player.set_control(false)
+	_arrive()
+
+
+func _unhandled_input(event: InputEvent) -> void:
+	if _player == null or not _player.frozen:
+		return
+	if event.is_action_pressed("jump") or event.is_action_pressed("interact"):
+		_advance = true
+
+
+# ── the room ───────────────────────────────────────────────────────────────
+
+## The floor of the hall, out to the wall, and the wall itself. One disc and a ring of
+## slabs: there is nowhere in here to fall and nothing to fall through, which is the whole
+## difference between this room and the one it replaced. The arena is solid ground.
+func _build_ground() -> void:
+	var r: float = ParkourHall.R_WALL
+	var body := StaticBody3D.new()
+	body.name = "Ground"
+	body.add_child(_shape(_disc(r), Vector3(0.0, -1.0, 0.0)))
+	# the wall, which is not decoration: it is what makes this a room with one door in it
+	var sides := 20
+	for i in sides:
+		var a: float = TAU * float(i) / float(sides)
+		var dir := Vector3(cos(a), 0.0, -sin(a))
+		# the box is laid so that its local X is the inward direction and its local Z runs
+		# along the wall, which is what a Y-rotation by the angle between them does
+		var slab := BoxShape3D.new()
+		slab.size = Vector3(1.2, 24.0, TAU * r / float(sides) * 1.16)
+		var s := _shape(slab, dir * (r + 0.35) + Vector3(0.0, 12.0, 0.0))
+		s.rotation.y = a
+		body.add_child(s)
+	add_child(body)
+
+
+func _shape(shape: Shape3D, pos: Vector3) -> CollisionShape3D:
+	var s := CollisionShape3D.new()
+	s.shape = shape
+	s.position = pos
+	return s
+
+
+func _disc(radius: float) -> CylinderShape3D:
+	var c := CylinderShape3D.new()
+	c.radius = radius
+	c.height = 2.0
+	return c
+
+
+## The hall the player is standing in, built as one thing by the thing that owns it.
+func _build_backdrop() -> void:
+	_hall = ParkourHall.new()
+	add_child(_hall)
+
+
+## The two things the room puts in the hall itself. The staff is the door: everything the
+## player is about to meet is on the other side of picking it up. And the thing in the
+## ceiling sleeps until then — see ParkourHand.wake.
+func _build_threats() -> void:
+	_staff = ParkourStaff.new()
+	add_child(_staff)
+	# standing in the one doorway, a step in front of it, where a person can reach it
+	_staff.setup({"x": 0.0, "top": 0.0, "z": ParkourHall.GATE_Z + 2.4})
+	_boss = ParkourHand.new()
+	add_child(_boss)
+	_boss.setup({"x": 0.0, "z": -2.0, "top": 0.0})
+
+
+## Everything that only exists once the player is holding the staff. They do not appear on
+## the floor: they come up through it (see ParkourEnemy).
+func _arm_creatures() -> void:
+	if _armed:
+		return
+	_armed = true
+	for row in ENEMIES:
+		var creature := ParkourEnemy.new()
+		add_child(creature)
+		creature.setup(row)
+		_enemies.append(creature)
+
+
+## The other half of the world switch: what is hunting the player and how the hall around
+## them is painted. The lighting half stays in _apply_world.
+func _react_room(reality: int) -> void:
+	for creature in _enemies:
+		creature.react(reality)
+	if _boss != null:
+		_boss.react(reality)
+
+
+## One tear for the whole room rather than a screen shader per prop: everything in here
+## that wants to hit the picture asks the room to do it.
+func pulse_glitch(amount: float) -> void:
+	if _glitch != null:
+		_glitch.burst(amount)
+
+
+# ── the three the flat game kept in its corner ─────────────────────────────
+
+## Built where the flat game's HUD kept them, because the HUD did not survive the room
+## before this one. Losing one dims it rather than hiding it: the plates are left standing.
+func _build_health() -> void:
+	var panel := Control.new()
+	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	panel.position = Vector2(596.0, 9.0)
+	panel.size = Vector2(40.0, 8.0)
+	_layer.add_child(panel)
+	for i in ParkourPlayer.MAX_HITS:
+		var lamp := ColorRect.new()
+		lamp.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		lamp.color = COL_KEYS
+		lamp.size = Vector2(7.0, 7.0)
+		lamp.position = Vector2(float(i) * 12.0, 0.0)
+		panel.add_child(lamp)
+		_lamps.append(lamp)
+	if _player != null:
+		_player.hits_changed.connect(_paint_health)
+	_paint_health(0)
+
+
+func _paint_health(hits_taken: int) -> void:
+	for i in _lamps.size():
+		var lost: bool = i < hits_taken
+		_lamps[i].color = Color(0.24, 0.06, 0.08, 0.5) if lost else COL_KEYS
+
+
+## The world switch, and it is the same switch it has always been: what the room is lit
+## by, and how thick the air in it is. Nothing here is an overlay.
+func _apply_world(reality: int) -> void:
+	var perceived: bool = reality == RealityManager.Reality.PERCEIVED
+	var pal: Dictionary = PALETTE_PERCEIVED if perceived else PALETTE_TRUE
+	if _sun != null:
+		_sun.light_color = Color(pal["sun"])
+		_sun.light_energy = float(pal["sun_energy"])
+	if _env != null:
+		_env.background_color = Color(pal["background"])
+		_env.ambient_light_color = Color(pal["ambient"])
+		_env.ambient_light_energy = float(pal["ambient_energy"])
+		_env.fog_light_color = Color(pal["fog_color"])
+		_env.fog_density = float(pal["fog"])
+		# the floor of this room is wet stone, and a wet floor that reflects is most of
+		# what makes it read as wet at all
+		_env.ssr_enabled = true
+	if _player != null:
+		_player.tint_body(Color(pal["hands"]))
+	_paint_world_label()
+
+
+# ── the room's own HUD ─────────────────────────────────────────────────────
+
+func _build_ui() -> void:
+	_layer = CanvasLayer.new()
+	_layer.layer = 10
+	add_child(_layer)
+
+	_world = _mk_label(Vector2(16.0, 12.0), Vector2(200.0, 18.0), 12, COL_PERCEIVED, HORIZONTAL_ALIGNMENT_LEFT)
+	_keys = _mk_label(Vector2(16.0, 332.0), Vector2(608.0, 18.0), 10, COL_KEYS, HORIZONTAL_ALIGNMENT_CENTER)
+	# the keys line does not lie at any point in the room: it leaves the click out until
+	# there is something in the player's hand to click with
+	_paint_keys()
+	# the room talks in captions. Every line it says stands on its own black bar, sized to
+	# the line rather than to the screen, so it can be read over a hall that is doing its
+	# best to look like something else
+	_narration = _caption(Vector2(24.0, 144.0), Vector2(592.0, 28.0), 12, COL_WORD, true)
+	_narration_row = _last_bar
+	_prompt = _caption(Vector2(24.0, 296.0), Vector2(592.0, 24.0), 11, COL_KEYS, false)
+	_prompt_row = _last_bar
+	_prompt_row.visible = false
+	_build_health()
+	_paint_world_label()
+
+
+func _mk_label(pos: Vector2, size: Vector2, size_px: int, col: Color, align: HorizontalAlignment) -> Label:
+	var l := Label.new()
+	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	l.add_theme_font_size_override("font_size", size_px)
+	l.add_theme_color_override("font_color", col)
+	l.add_theme_color_override("font_outline_color", COL_OUTLINE)
+	l.add_theme_constant_override("outline_size", 2)
+	l.horizontal_alignment = align
+	l.position = pos
+	l.size = size
+	_layer.add_child(l)
+	return l
+
+
+## One line of the room's speech: a label inside a bar, so the words are legible over the
+## hall. The bar is a container rather than a rectangle because it has to be exactly as
+## wide as the sentence and no wider, and a container that hugs its child is the only way
+## to get that without measuring text by hand. Returns the label; the row it stands on is
+## left in _last_bar, because the line and its bar fade in and out together.
+##
+## Every piece of it is told not to eat the mouse. A full-width Control with the default
+## filter stops mouse motion before the player ever sees it, and that is what a mouse-look
+## that does not look feels like.
+func _caption(pos: Vector2, size: Vector2, px: int, col: Color, eerie: bool) -> Label:
+	var row := CenterContainer.new()
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	row.position = pos
+	row.size = size
+	_layer.add_child(row)
+
+	var bar := PanelContainer.new()
+	bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var style := StyleBoxFlat.new()
+	style.bg_color = COL_BAR
+	style.content_margin_left = 12.0
+	style.content_margin_right = 12.0
+	style.content_margin_top = 4.0
+	style.content_margin_bottom = 4.0
+	style.corner_radius_top_left = 2
+	style.corner_radius_top_right = 2
+	style.corner_radius_bottom_left = 2
+	style.corner_radius_bottom_right = 2
+	bar.add_theme_stylebox_override("panel", style)
+	row.add_child(bar)
+
+	var l := Label.new()
+	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	l.add_theme_font_size_override("font_size", px)
+	l.add_theme_color_override("font_color", col)
+	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	if eerie:
+		# the same damaged hand the rooms are written in: this is the game talking, not
+		# a UI
+		var hand: Node = preload("res://ui/creepy_font.gd").new()
+		l.add_theme_font_override("font", hand.call("build_eerie") as FontFile)
+		hand.free()
+	bar.add_child(l)
+	_last_bar = row
+	return l
+
+
+func _paint_world_label() -> void:
+	if _world == null:
+		return
+	_world.text = RealityManager.reality_name()
+	_world.add_theme_color_override("font_color",
+		COL_PERCEIVED if RealityManager.is_perceived() else COL_TRUE)
+
+
+# ── arriving ───────────────────────────────────────────────────────────────
+
+## The last few seconds the game keeps the player's hands off them: the room comes up out
+## of the black, says one thing, and then it is theirs.
+func _arrive() -> void:
+	var rect := get_node_or_null("Fade/Rect") as ColorRect
+	if rect != null:
+		var fade := create_tween()
+		fade.tween_property(rect, "modulate:a", 0.0, FADE_IN)
+		await fade.finished
+	await _run_intro(_player)
+
+
+func _run_intro(player: ParkourPlayer) -> void:
+	await _sleep(0.6)
+	for row in entry_lines:
+		var text: String = row.strip_edges()
+		if text == "":
+			continue
+		_narration.text = text
+		var t := create_tween()
+		t.tween_property(_narration_row, "modulate:a", 1.0, 0.4)
+		await t.finished
+		var held: float = 0.0
+		while held < entry_hold and not (_advance and skippable):
+			held += 0.05
+			await _sleep(0.05)
+		var cut: bool = _advance and skippable
+		_advance = false
+		var out := create_tween()
+		out.tween_property(_narration_row, "modulate:a", 0.0, 0.35)
+		await out.finished
+		if cut:
+			break
+	_advance = false
+	_narration.text = ""
+	if player != null:
+		player.set_control(true)
+
+
+## Waits in small steps, so a line can be cut short instead of sitting there until it is
+## over.
+func _sleep(seconds: float) -> void:
+	var left := seconds
+	while left > 0.0:
+		var step: float = minf(0.05, left)
+		await get_tree().create_timer(step).timeout
+		left -= step
+
+
+# ── what taking the staff changes ──────────────────────────────────────────
+
+## The player has it. Everything the room was holding back arrives at once: the floor
+## opens and the creatures come up out of it, the ceiling opens and the thing that owns
+## the room comes down out of it, the keys line finally admits there is something to click
+## with — and the room tears once, hard, because this is the moment it stops being a walk.
+func equip_staff() -> void:
+	if _armed:
+		return
+	_arm_creatures()
+	if _boss != null:
+		_boss.wake()
+	if _player != null:
+		_player.equip_staff()
+	_paint_keys()
+	pulse_glitch(0.9)
+	AudioManager.play_sfx("sting", -3.0, 1.15)
+	AudioManager.play_sfx("static_burst", -9.0, 0.8)
+	_say("IT WAS ONLY EVER WAITING FOR YOU TO BE HOLDING SOMETHING.", 2.6)
+
+
+## The thing in the ceiling has been put down, and the room says so. Everything else the
+## room put in here with the player goes down with it, and the one door in the room — which
+## has been glowing in the gate since the player walked in and until this second has not
+## been a door at all — opens.
+func boss_down() -> void:
+	if _opened:
+		return
+	_opened = true
+	for creature in _enemies:
+		creature.hit()
+	_open_exit()
+	pulse_glitch(0.8)
+	AudioManager.play_sfx("chime", -6.0, 0.8)
+	_say("IT KNOWS YOU NOW. THE DOOR IS OPEN.", 3.4)
+
+
+func _open_exit() -> void:
+	var line := get_node_or_null("FinishLine") as Area3D
+	if line == null:
+		return
+	var box := line.get_node_or_null("CollisionShape3D") as CollisionShape3D
+	if box != null:
+		box.set_deferred("disabled", false)
+	line.set_deferred("monitoring", true)
+
+
+## One line, over the room, for a moment. The intro uses its own slower version of this;
+## this one is for something said while the player is already moving.
+func _say(text: String, hold: float) -> void:
+	if _narration == null or _narration_row == null:
+		return
+	_narration.text = text
+	var t := create_tween()
+	t.tween_property(_narration_row, "modulate:a", 1.0, 0.3)
+	t.tween_interval(hold)
+	t.tween_property(_narration_row, "modulate:a", 0.0, 0.45)
+
+
+## The room's one-line prompt: what is in front of the player, and what pressing E would
+## do about it. Nothing else in the room uses it.
+func show_prompt(text: String) -> void:
+	if _prompt == null:
+		return
+	_prompt.text = text
+	if _prompt_row != null:
+		_prompt_row.visible = text != ""
+
+
+## The keys line. It does not mention the click until the click does something, which is
+## the only honest way to teach a control the room has not given out yet.
+func _paint_keys() -> void:
+	if _keys == null:
+		return
+	if _armed:
+		_keys.text = "MOUSE LOOKS · CLICK ZAPS · WASD MOVES · SPACE JUMPS · Q SWITCHES · R RESTARTS"
+	else:
+		_keys.text = "MOUSE LOOKS · WASD MOVES · SPACE JUMPS · Q SWITCHES · E TAKES · R RESTARTS"

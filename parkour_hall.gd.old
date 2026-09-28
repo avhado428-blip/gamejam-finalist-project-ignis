@@ -1,0 +1,290 @@
+class_name ParkourHall
+extends Node3D
+## The room the game stops lying in, stood up as the place the cut leads to.
+##
+## Everything around the course is one picture: a colossal temple hall, seen from
+## inside — a solid floor with holes broken through it, walls closing on every side,
+## a ceiling of churning cloud, and one gate at the end of the hall. There is exactly
+## *one* gate in here. Everything else is built from parts that repeat on purpose
+## (columns, lanterns, rubble) so that the one building in the room is still the one
+## building in the room.
+##
+## It is flat, and it is in depth. Every layer stands at its own distance from the
+## middle of the run — the walls furthest out, then a row of far columns, then a row
+## of near ones, then the lanterns hanging over the walkway — so running down the hall
+## slides the near columns past fast, the far ones slower, and the walls barely at all.
+## The room is a parallax. That is the whole reason it is built this way.
+##
+## Every picture in here is painted in bone grey and black. The world is what colours
+## it: the false world washes it pale and cold, the true world soaks it in blood. One
+## set of pictures, two temples, and Q is the difference between them.
+
+const FLOOR := "res://assets/generated/temple_floor.png"
+const WALL := "res://assets/generated/temple_wall.png"
+const SKY := "res://assets/generated/temple_sky.png"
+const COLUMN := "res://assets/generated/temple_column.png"
+const LANTERN := "res://assets/generated/temple_lamp.png"
+const RUBBLE := "res://assets/generated/temple_rubble.png"
+const GATE := "res://assets/generated/temple_gate.png"
+
+## The hall's own measurements, in metres. The player crosses about a hundred of them,
+## so it is a big room: the walls stand twenty out from the middle of the run, the
+## ceiling thirty up, and the hall's true floor twenty down. The walkway the player
+## crosses is the *upper* floor, broken away — which is why its holes show a real floor
+## underneath instead of nothing at all.
+const HALF := 20.0
+const BACK := 78.0
+const FRONT := -132.0
+const CEIL_Y := 30.0
+## The hall's own floor. It is *below* the height the player is put back up from, so
+## falling through a hole in the walkway always respawns rather than landing someone in
+## a pit with no way out — and the deep end of every column reads as standing in it.
+const DEEP_Y := -20.0
+const MID := (BACK + FRONT) * 0.5
+
+## The parallax layers, each at its own distance. Two rows of columns standing on the
+## hall's own floor and reaching up towards its ceiling, and the lanterns hung over the
+## walkway. The two rows stop at different heights on purpose: nothing in here should
+## look like a grid.
+const COL_NEAR_X := 14.5
+const COL_NEAR_GAP := 13.0
+const COL_NEAR_H := 50.0
+const COL_FAR_X := 18.0
+const COL_FAR_GAP := 21.0
+const COL_FAR_H := 46.0
+const LANTERN_X := 8.0
+const LANTERN_GAP := 15.0
+const LANTERN_Y := 10.0
+const LANTERN_H := 2.6
+const RUBBLE_GAP := 17.0
+
+## How often a picture repeats. Big numbers: the room is enormous, and stone should not
+## look like wallpaper. The walls get the largest of them by far, because they are the
+## surface the player is closest to for the longest and the first place repetition shows.
+const TILE_FLOOR := 7.0
+const TILE_WALL := 20.0
+const TILE_SKY := 20.0
+
+## The ceiling is the one thing in here that moves on its own, and the lanterns swing.
+const CLOUD := Vector2(0.004, 0.0016)
+const SWAY := 0.5
+const SWAY_ARC := 3.5
+## How far away a prop is dropped. The fog has already eaten it by then.
+const CULL := 150.0
+
+## The gate: one structure, standing across the hall where the climb starts. Its foot
+## is buried a little in the walkway so the arch's own opening lands at the height the
+## player walks at, instead of over their head.
+const GATE_Z := -73.8
+const GATE_SIZE := 22.0
+const GATE_BASE := 0.85
+
+## What each world does to the pictures. Keys are RealityManager.Reality values.
+const TINT := {
+	0: {
+		"stone": Color(1.62, 1.58, 1.52),
+		"sky": Color(1.34, 1.38, 1.52),
+		"glow": Color(0.12, 0.12, 0.15),
+		"energy": 0.25,
+		"prop": Color(0.96, 0.98, 1.00),
+	},
+	1: {
+		"stone": Color(1.32, 0.38, 0.32),
+		"sky": Color(1.14, 0.26, 0.22),
+		"glow": Color(0.80, 0.08, 0.06),
+		"energy": 0.95,
+		"prop": Color(1.00, 0.34, 0.30),
+	},
+}
+
+var _stone: Array[StandardMaterial3D] = []
+var _sky: Array[StandardMaterial3D] = []
+var _glow: Array[StandardMaterial3D] = []
+var _props: Array[Sprite3D] = []
+var _lanterns: Array[Node3D] = []
+var _ceil: StandardMaterial3D
+var _gate: Sprite3D
+var _t := 0.0
+
+
+func _ready() -> void:
+	_build()
+	react(RealityManager.current_reality)
+	RealityManager.reality_changed.connect(react)
+
+
+func _process(delta: float) -> void:
+	if GameState.is_paused:
+		return
+	_t += delta
+	if _ceil != null:
+		_ceil.uv1_offset.x = fmod(_ceil.uv1_offset.x + CLOUD.x * delta, 1.0)
+		_ceil.uv1_offset.y = fmod(_ceil.uv1_offset.y + CLOUD.y * delta, 1.0)
+	for i in _lanterns.size():
+		var pivot: Node3D = _lanterns[i]
+		pivot.rotation_degrees = Vector3(0.0, 0.0, sin(_t * SWAY + float(i) * 1.7) * SWAY_ARC)
+
+
+func _build() -> void:
+	# the hall's own floor, far under the one the player crosses: a light in it, so
+	# the holes in the walkway glow up at the player instead of going black
+	_panel(Vector2(HALF * 2.0 + 8.0, BACK - FRONT + 24.0),
+		Vector3(0.0, DEEP_Y, MID), Vector3(-90.0, 0.0, 0.0), FLOOR, TILE_FLOOR, true)
+	# four walls and a ceiling, so the room closes on every side of the player
+	_panel(Vector2(BACK - FRONT, CEIL_Y - DEEP_Y),
+		Vector3(-HALF, (CEIL_Y + DEEP_Y) * 0.5, MID), Vector3(0.0, 90.0, 0.0), WALL, TILE_WALL)
+	_panel(Vector2(BACK - FRONT, CEIL_Y - DEEP_Y),
+		Vector3(HALF, (CEIL_Y + DEEP_Y) * 0.5, MID), Vector3(0.0, -90.0, 0.0), WALL, TILE_WALL)
+	_panel(Vector2(HALF * 2.0, CEIL_Y - DEEP_Y),
+		Vector3(0.0, (CEIL_Y + DEEP_Y) * 0.5, BACK), Vector3.ZERO, WALL, TILE_WALL)
+	_panel(Vector2(HALF * 2.0, CEIL_Y - DEEP_Y),
+		Vector3(0.0, (CEIL_Y + DEEP_Y) * 0.5, FRONT), Vector3(0.0, 180.0, 0.0), WALL, TILE_WALL)
+	_ceil = _panel(Vector2(HALF * 2.0, BACK - FRONT),
+		Vector3(0.0, CEIL_Y, MID), Vector3(90.0, 0.0, 0.0), SKY, TILE_SKY, false, true)
+
+	_columns(COL_NEAR_X, COL_NEAR_GAP, COL_NEAR_H)
+	_columns(COL_FAR_X, COL_FAR_GAP, COL_FAR_H)
+	_hang_lanterns()
+	_scatter_rubble()
+	_stand_gate()
+
+
+## One panel of the hall: a flat picture, stood at an angle in the room. Registered as
+## stone, or as sky, or as a floor with light in it, so a world change can repaint it.
+func _panel(size: Vector2, pos: Vector3, rot: Vector3, path: String, tile: float,
+		glowing := false, is_sky := false) -> StandardMaterial3D:
+	var mi := MeshInstance3D.new()
+	var quad := QuadMesh.new()
+	quad.size = size
+	mi.mesh = quad
+	mi.position = pos
+	mi.rotation_degrees = rot
+	var m := _art(path, Vector2(maxf(1.0, round(size.x / tile)), maxf(1.0, round(size.y / tile))))
+	mi.material_override = m
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(mi)
+	if is_sky:
+		_sky.append(m)
+	else:
+		_stone.append(m)
+	if glowing:
+		m.emission_enabled = true
+		m.emission = Color(1.0, 1.0, 1.0)
+		m.emission_energy_multiplier = 1.0
+		_glow.append(m)
+	return m
+
+
+func _art(path: String, rep: Vector2) -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	m.disable_receive_shadows = true
+	m.cull_mode = BaseMaterial3D.CULL_DISABLED
+	m.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS_ANISOTROPIC
+	m.albedo_texture = load(path) as Texture2D
+	m.uv1_scale = Vector3(rep.x, rep.y, 1.0)
+	return m
+
+
+## A row of columns on both sides of the hall, standing on its own floor and reaching
+## its ceiling. Flat pictures, billboarded, because a column that always faces the
+## player is a column that never turns into a paper edge as they run past it.
+func _columns(x: float, gap: float, height: float) -> void:
+	var z := BACK - gap * 0.5
+	while z > FRONT:
+		for side in [-1.0, 1.0]:
+			_prop(COLUMN, height, Vector3(side * x, DEEP_Y + height * 0.5, z))
+		z -= gap
+
+
+## Lanterns hung over the walkway. Each one has its rope drawn up to the ceiling and
+## swings from the bottom of it, so it hangs rather than floats.
+func _hang_lanterns() -> void:
+	var z := BACK - LANTERN_GAP * 0.5
+	while z > FRONT:
+		for side in [-1.0, 1.0]:
+			var x: float = side * LANTERN_X
+			var rope := MeshInstance3D.new()
+			var cord := BoxMesh.new()
+			cord.size = Vector3(0.10, CEIL_Y - LANTERN_Y, 0.10)
+			rope.mesh = cord
+			rope.position = Vector3(x, (CEIL_Y + LANTERN_Y) * 0.5, z)
+			var dark := _art(LANTERN, Vector2.ONE)
+			dark.albedo_color = Color(0.05, 0.05, 0.06)
+			dark.albedo_texture = null
+			rope.material_override = dark
+			rope.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+			add_child(rope)
+
+			var pivot := Node3D.new()
+			pivot.position = Vector3(x, LANTERN_Y, z)
+			add_child(pivot)
+			_prop(LANTERN, LANTERN_H, Vector3(0.0, -LANTERN_H * 0.5, 0.0), true, pivot)
+			_lanterns.append(pivot)
+		z -= LANTERN_GAP
+
+
+## The hall's floor was broken, and what fell out of it is still down there.
+func _scatter_rubble() -> void:
+	var z := BACK - 6.0
+	while z > FRONT:
+		for side in [-1.0, 1.0]:
+			var x: float = side * (HALF - randf_range(1.0, 6.0))
+			var h: float = randf_range(1.2, 2.4)
+			_prop(RUBBLE, h, Vector3(x, DEEP_Y + h * 0.5, z + randf_range(-3.5, 3.5)))
+		z -= RUBBLE_GAP
+
+
+## The one gate. Fixed, facing the player's approach, so the whole hall is aimed at it
+## and the run is one long walk towards a door.
+func _stand_gate() -> void:
+	_gate = Sprite3D.new()
+	var tex := load(GATE) as Texture2D
+	_gate.texture = tex
+	_gate.pixel_size = GATE_SIZE / float(tex.get_height())
+	_gate.billboard = BaseMaterial3D.BILLBOARD_DISABLED
+	_gate.shaded = false
+	_gate.alpha_cut = SpriteBase3D.ALPHA_CUT_DISCARD
+	_gate.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS_ANISOTROPIC
+	_gate.position = Vector3(0.0, GATE_BASE + GATE_SIZE * 0.5, GATE_Z)
+	_gate.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(_gate)
+	_props.append(_gate)
+
+
+func _prop(art: String, height: float, pos: Vector3, billboard := true, parent: Node3D = null) -> Sprite3D:
+	var s := Sprite3D.new()
+	var tex := load(art) as Texture2D
+	# a picture that is not there still has to *be* a picture, or one unimported file
+	# takes the whole room down with it
+	if tex == null:
+		tex = PlaceholderTexture2D.new()
+	s.texture = tex
+	s.pixel_size = height / float(tex.get_height())
+	s.billboard = BaseMaterial3D.BILLBOARD_ENABLED if billboard else BaseMaterial3D.BILLBOARD_DISABLED
+	s.shaded = false
+	s.alpha_cut = SpriteBase3D.ALPHA_CUT_DISCARD
+	s.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS_ANISOTROPIC
+	s.position = pos
+	s.visibility_range_end = CULL
+	s.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	if parent == null:
+		add_child(s)
+	else:
+		parent.add_child(s)
+	_props.append(s)
+	return s
+
+
+func react(reality: int) -> void:
+	var key: int = 1 if reality == RealityManager.Reality.TRUE else 0
+	var t: Dictionary = TINT[key]
+	for m in _stone:
+		m.albedo_color = t["stone"]
+	for m in _sky:
+		m.albedo_color = t["sky"]
+	for m in _glow:
+		m.emission = t["glow"]
+		m.emission_energy_multiplier = float(t["energy"])
+	for s in _props:
+		s.modulate = t["prop"]

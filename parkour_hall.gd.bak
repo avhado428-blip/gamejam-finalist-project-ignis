@@ -1,0 +1,509 @@
+class_name ParkourHall
+extends Node3D
+## The room the game stops lying in, stood up as the place the cut leads to.
+##
+## A circular temple, seen from inside: one wall running all the way round with no break
+## in it, a ceiling of churning cloud over the wall's broken rim, beams springing out of
+## that wall with lanterns slung under them, and exactly one building standing on the
+## floor. It is one gate, and it is not repeated anywhere — a wall that goes round in a
+## ring cannot have four of anything on it, which is the whole reason it is a ring.
+##
+## It is flat, and it is in depth. Every layer sits at its own radius: the wall furthest
+## out, then the piers on it, then the lanterns hung along it, then the beams and the
+## lanterns slung under them, then the gate. Walking the room slides the near lanterns
+## past fast and the wall barely at all. The room is a parallax.
+##
+## Every picture in here is painted in bone grey and black, and every stone surface
+## carries its own picture again as its emission. The world is what colours it: the true
+## world soaks the hall in blood, which is what it is and what it opens in, and the false
+## one washes it pale and cold. One set of pictures, two temples, and Q is the
+## difference between them.
+
+# ── the pictures everything in here is cut from ────────────────────────────
+
+const FLOOR := "res://assets/generated/temple_floor.png"
+const WALL := "res://assets/generated/temple_wall.png"
+const SKY := "res://assets/generated/temple_sky.png"
+const COLUMN := "res://assets/generated/temple_column.png"
+const LANTERN := "res://assets/generated/temple_lamp.png"
+const RUBBLE := "res://assets/generated/temple_rubble.png"
+const GATE := "res://assets/generated/temple_gate.png"
+const MIST := "res://assets/generated/temple_mist.png"
+
+# ── how big the hall is ────────────────────────────────────────────────────
+
+## One round room. The wall stands thirty metres out from the middle of the floor and
+## twenty-four up, and the cloud closes over the top of it: there is no way out of here
+## that is not through the gate.
+const R_WALL := 30.0
+const WALL_H := 24.0
+const DOME_H := 26.0
+const SEGMENTS := 64
+
+## How often a picture repeats. Big numbers: stone should not look like wallpaper, and
+## the wall gets the largest of them both because it is the biggest surface in here and
+## because it is the one the player's eye is on for the longest.
+const TILE_STONE := 9.0
+const TILE_FLOOR := 8.0
+const TILE_SKY := 26.0
+
+# ── what is built in it ────────────────────────────────────────────────────
+
+## Beams springing out of the wall, the piers they land on, and the lanterns slung under
+## them. The beams and the piers stand on the same eight spokes on purpose: a beam that
+## lands on the top of a pier is a room that was put together rather than decorated.
+const BEAMS := 8
+const BEAM_Y := 19.5
+const BEAM_IN := 20.0
+const BEAM_THICK := 0.66
+const PIER_R := 28.2
+const PIER_H := 16.4
+## A lantern hung under every beam, and a second tier hung straight off the wall, higher
+## up and further out, so the ones the player walks under are not all at one height.
+const LANTERN_H := 3.2
+const LANTERN_R := 19.4
+const LANTERN_Y := 13.4
+const WALL_LANTERNS := 8
+const WALL_LANTERN_R := 26.4
+const WALL_LANTERN_Y := 10.2
+## Broken slabs lying over the rim of the wall: the top of this room is not a clean
+## circle, and the pieces that came off it are still up there.
+const SLABS := 11
+const SLAB_Y := 22.2
+
+## The one gate. It stands a quarter turn to the left of the way the player faces when
+## they arrive, on the floor, with its arch at the height of a person's chest.
+const GATE_Z := -25.0
+const GATE_H := 19.0
+const GATE_BASE := -0.35
+const ARCH_Y := 4.4
+
+## What is lying around on the floor: bone and skull along the wall, rock, mist, run-off
+## standing in the slabs, and one broken timber frame off to the left of the way in.
+const ROCKS := 15
+const BONES := 17
+const MISTS := 9
+const PUDDLES := 6
+const SCAFFOLD_AT := Vector3(-20.5, 0.0, 7.0)
+
+## The things in here that move on their own: the ceiling, and the lanterns.
+const CLOUD := Vector2(0.0032, 0.0013)
+const SWAY := 0.5
+const SWAY_ARC := 2.2
+const MIST_DRIFT := 0.10
+## How far away a prop is dropped. The room is sixty metres across; this is well past it.
+const CULL := 160.0
+
+## What each world does to the pictures. Keys are RealityManager.Reality values. Above 1
+## on the stone in the false world, because a hall meant to read as pale paper has to come
+## out brighter than the monochrome picture it is cut from; and the emission is what makes
+## the wall glow in the colour of the world it is standing in.
+const TINT := {
+	0: {
+		"stone": Color(1.55, 1.52, 1.48),
+		"sky": Color(1.30, 1.34, 1.46),
+		"glow": Color(0.14, 0.14, 0.18),
+		"energy": 0.20,
+		"prop": Color(0.94, 0.96, 1.00),
+		"mist": Color(0.78, 0.80, 0.86, 0.30),
+		"lamp": Color(0.74, 0.80, 1.00),
+	},
+	1: {
+		"stone": Color(1.05, 0.26, 0.20),
+		"sky": Color(1.08, 0.24, 0.20),
+		"glow": Color(0.78, 0.07, 0.05),
+		"energy": 1.05,
+		"prop": Color(1.00, 0.40, 0.34),
+		"mist": Color(0.52, 0.15, 0.13, 0.34),
+		"lamp": Color(1.00, 0.30, 0.14),
+	},
+}
+
+var _stone: Array[StandardMaterial3D] = []
+var _glow: Array[StandardMaterial3D] = []
+var _sky: Array[StandardMaterial3D] = []
+var _props: Array[Sprite3D] = []
+var _mist: Array[Sprite3D] = []
+var _mist_home: Array[Vector3] = []
+var _lanterns: Array[Node3D] = []
+var _lights: Array[OmniLight3D] = []
+var _ceil: StandardMaterial3D
+var _gate: Sprite3D
+var _arch: OmniLight3D
+var _arch_energy := 1.0
+var _t := 0.0
+
+
+func _ready() -> void:
+	_build()
+	react(RealityManager.current_reality)
+	RealityManager.reality_changed.connect(react)
+
+
+func _process(delta: float) -> void:
+	if GameState.is_paused:
+		return
+	_t += delta
+	if _ceil != null:
+		_ceil.uv1_offset = Vector3(fmod(_ceil.uv1_offset.x + CLOUD.x * delta, 1.0),
+			fmod(_ceil.uv1_offset.y + CLOUD.y * delta, 1.0), 0.0)
+	for i in _lanterns.size():
+		var pivot: Node3D = _lanterns[i]
+		pivot.rotation_degrees.z = sin(_t * SWAY + float(i) * 1.7) * SWAY_ARC
+	for i in _mist.size():
+		var s: Sprite3D = _mist[i]
+		var home: Vector3 = _mist_home[i]
+		s.position.x = home.x + sin(_t * MIST_DRIFT + float(i)) * 1.6
+		s.position.z = home.z + cos(_t * MIST_DRIFT * 0.8 + float(i) * 1.3) * 1.6
+	if _arch != null:
+		_arch.light_energy = _arch_energy * (0.88 + 0.12 * sin(_t * 1.7))
+
+
+# ── building it ────────────────────────────────────────────────────────────
+
+func _build() -> void:
+	_build_floor()
+	_build_wall()
+	_build_ceiling()
+	_build_rim()
+	_build_frame()
+	_build_gate()
+	_scatter()
+
+
+## The floor: one disc of wet, cracked slabs, and the one surface in here that answers a
+## light with a reflection. There is no standing water laid on top of it: the mirror is the
+## floor itself, and the whole room lands in it — the wall, the gate, the lanterns and the
+## one door out. Roughness is what makes the reflection hard, and a hard reflection on dark
+## stone is most of what makes a floor read as wet rather than as rock.
+func _build_floor() -> void:
+	var mat := _stone_mat(FLOOR, Vector2(R_WALL * 2.0 / TILE_FLOOR, R_WALL * 2.0 / TILE_FLOOR),
+		0.16, 0.30)
+	mat.emission_enabled = false
+	var mi := _cyl(R_WALL, 2.0, -1.0, mat, true)
+	mi.name = "Floor"
+
+
+## The wall, in one piece and all the way round. A cylinder rather than four walls: this
+## is the one shape the room cannot repeat anything on.
+func _build_wall() -> void:
+	var mat := _stone_mat(WALL, Vector2(TAU * R_WALL / TILE_STONE, WALL_H / TILE_STONE), 0.86, 0.0)
+	mat.emission_enabled = true
+	var mi := _cyl(R_WALL, WALL_H, WALL_H * 0.5, mat, false)
+	mi.name = "Wall"
+	_glow.append(mat)
+
+
+## And the cloud over it: a dome rather than a lid, because the ceiling of this room
+## curves away towards the wall on every side and the picture of it is what the player
+## spends the whole fight under.
+func _build_ceiling() -> void:
+	var mi := MeshInstance3D.new()
+	var dome := SphereMesh.new()
+	dome.radius = R_WALL
+	dome.height = DOME_H
+	dome.is_hemisphere = true
+	dome.radial_segments = SEGMENTS
+	dome.rings = 20
+	mi.mesh = dome
+	mi.position = Vector3(0.0, WALL_H, 0.0)
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	var m := _art(SKY, Vector2(6.0, 2.0))
+	mi.material_override = m
+	_sky.append(m)
+	_ceil = m
+	add_child(mi)
+
+
+## What came off the rim. Flat, dark, at angles, and over the ceiling's own edge, so the
+## top of the room is broken rather than drawn as a circle.
+func _build_rim() -> void:
+	var dark := _dark(Color(0.05, 0.045, 0.055), 0.8)
+	for i in SLABS:
+		var a: float = TAU * float(i) / float(SLABS) + 0.35
+		var slab := _box(Vector3(2.4 + float(i % 3) * 1.6, 0.9, 5.0 + float(i % 2) * 2.0),
+			_dir(a) * (R_WALL - 2.6) + Vector3(0.0, SLAB_Y, 0.0), dark)
+		slab.rotation.y = a
+		slab.rotation.z = -0.10 + 0.05 * float(i % 4)
+
+
+## The piers and the beams: eight of each, on the same spokes. This is the skeleton the
+## room is hung off, and it is what the lanterns hang from.
+func _build_frame() -> void:
+	var wood := _dark(Color(0.055, 0.05, 0.062), 0.72)
+	for i in BEAMS:
+		var a: float = TAU * float(i) / float(BEAMS) + PI / float(BEAMS)
+		var dir := _dir(a)
+		# the pier the beam lands on, standing on the wall
+		_prop(COLUMN, PIER_H, dir * PIER_R + Vector3(0.0, PIER_H * 0.5, 0.0), true)
+		# the beam itself, lying along the spoke
+		var beam := _box(Vector3(R_WALL - BEAM_IN, BEAM_THICK, BEAM_THICK),
+			dir * ((R_WALL + BEAM_IN) * 0.5) + Vector3(0.0, BEAM_Y, 0.0), wood)
+		beam.rotation.y = a
+		# the rope, and the lantern hanging off the end of the beam
+		var _rope := _box(Vector3(0.09, BEAM_Y - LANTERN_Y, 0.09),
+			dir * LANTERN_R + Vector3(0.0, (BEAM_Y + LANTERN_Y) * 0.5, 0.0), wood)
+		var pivot := Node3D.new()
+		pivot.position = dir * LANTERN_R + Vector3(0.0, LANTERN_Y, 0.0)
+		add_child(pivot)
+		_hang_lantern(pivot, i, i % 2 == 0)
+	# and the higher tier, hung straight off the wall
+	for i in WALL_LANTERNS:
+		var a: float = TAU * float(i) / float(WALL_LANTERNS)
+		var dir := _dir(a)
+		var _rope := _box(Vector3(0.09, 5.4, 0.09),
+			dir * WALL_LANTERN_R + Vector3(0.0, WALL_LANTERN_Y + 2.7, 0.0), wood)
+		var pivot := Node3D.new()
+		pivot.position = dir * WALL_LANTERN_R + Vector3(0.0, WALL_LANTERN_Y, 0.0)
+		add_child(pivot)
+		_hang_lantern(pivot, i + 40, i % 3 == 0)
+
+
+## One lantern, on the end of its rope. It is a picture rather than a model — a lantern
+## that always turns to face the player never turns into a paper edge — and the light is
+## in only some of them, because twelve omni lights in a closed room is a light show on a
+## laptop and these are their own picture anyway.
+func _hang_lantern(pivot: Node3D, index: int, lit: bool) -> void:
+	var lamp := _prop(LANTERN, LANTERN_H, Vector3(0.0, -LANTERN_H * 0.5, 0.0), true, pivot)
+	lamp.name = "Lantern%d" % index
+	_lanterns.append(pivot)
+	if lit:
+		_lamp(pivot.global_position if pivot.is_inside_tree() else pivot.position, 1.5, 15.0)
+
+
+## The one gate. Facing the middle of the room, standing on the floor of it, with the
+## arch lit from inside: this is the only building in here and the whole room is aimed at
+## it. There is a body behind the facade so that walking round the side of it shows a
+## building rather than a picture.
+func _build_gate() -> void:
+	var wood := _dark(Color(0.06, 0.055, 0.07), 0.86)
+	var mass := _box(Vector3(13.0, GATE_H * 0.74, 4.0),
+		Vector3(0.0, GATE_H * 0.37, GATE_Z - 2.3), wood)
+	mass.name = "GateMass"
+
+	_gate = Sprite3D.new()
+	var tex := load(GATE) as Texture2D
+	if tex == null:
+		tex = PlaceholderTexture2D.new()
+	_gate.texture = tex
+	_gate.pixel_size = GATE_H / float(tex.get_height())
+	# not billboarded, and facing +Z: this is a building, and a building that turned to
+	# look at the player would be the one thing in the room that is not a place
+	_gate.billboard = BaseMaterial3D.BILLBOARD_DISABLED
+	_gate.shaded = false
+	_gate.alpha_cut = SpriteBase3D.ALPHA_CUT_DISCARD
+	_gate.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS_ANISOTROPIC
+	_gate.position = Vector3(0.0, GATE_BASE + GATE_H * 0.5, GATE_Z)
+	_gate.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_gate.visibility_range_end = CULL
+	add_child(_gate)
+	_props.append(_gate)
+
+	# the light in the doorway, which is the only warm thing in here and the only reason
+	# the floor in front of the gate is not black
+	_arch = _lamp(Vector3(0.0, ARCH_Y, GATE_Z + 1.2), 4.2, 30.0)
+	_arch.name = "Arch"
+
+
+## Bone and skull along the wall, rock standing in the slabs, mist lying on the floor,
+## and one broken timber frame off to the left of the way in.
+func _scatter() -> void:
+	var rock := _dark(Color(0.045, 0.04, 0.05), 0.92)
+	for i in ROCKS:
+		var a: float = randf() * TAU
+		var r: float = randf_range(11.0, R_WALL - 2.0)
+		var lump := MeshInstance3D.new()
+		var s := SphereMesh.new()
+		s.radius = randf_range(0.5, 1.7)
+		s.height = s.radius * 1.5
+		s.radial_segments = 10
+		s.rings = 6
+		lump.mesh = s
+		lump.material_override = rock
+		lump.position = Vector3(cos(a) * r, randf_range(-0.25, 0.3), -sin(a) * r)
+		lump.scale = Vector3(1.0, randf_range(0.5, 0.9), randf_range(0.8, 1.3))
+		lump.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+		add_child(lump)
+
+	for i in BONES:
+		var a: float = TAU * float(i) / float(BONES) + 0.4
+		var r: float = randf_range(19.0, R_WALL - 1.0)
+		var h: float = randf_range(0.8, 1.7)
+		_prop(RUBBLE, h, Vector3(cos(a) * r, h * 0.28, -sin(a) * r), true)
+
+	for i in MISTS:
+		var a: float = TAU * float(i) / float(MISTS) + 0.9
+		var r: float = randf_range(17.0, 26.0)
+		var home := Vector3(cos(a) * r, 0.7, -sin(a) * r)
+		if i >= MISTS - 2:
+			home = Vector3(float(i - MISTS + 2) * 12.0 - 6.0, 0.7, GATE_Z + 4.0)
+		var s := _prop(MIST, randf_range(6.0, 10.0), home, true)
+		s.transparent = true
+		s.alpha_cut = SpriteBase3D.ALPHA_CUT_DISABLED
+		_mist.append(s)
+		_mist_home.append(home)
+
+	_scaffold()
+
+
+## The one structure that is not stone: a timber frame standing off to the left of the way
+## in, half of it still up. It is what the reference picture has where a second building
+## would go, which is the reason it is a frame and not an arch.
+func _scaffold() -> void:
+	var at := SCAFFOLD_AT
+	var wood_mat := _dark(Color(0.05, 0.045, 0.055), 0.78)
+	# four posts
+	_box(Vector3(0.55, 7.4, 0.55), at + Vector3(-4.5, 3.7, -1.7), wood_mat)
+	_box(Vector3(0.55, 7.4, 0.55), at + Vector3(4.5, 3.7, -1.7), wood_mat)
+	_box(Vector3(0.55, 5.6, 0.55), at + Vector3(-4.5, 2.8, 1.7), wood_mat)
+	_box(Vector3(0.55, 7.4, 0.55), at + Vector3(4.5, 3.7, 1.7), wood_mat)
+	# two rails across the top, and one along each side
+	_box(Vector3(9.6, 0.5, 0.5), at + Vector3(0.0, 7.2, -1.7), wood_mat)
+	_box(Vector3(9.6, 0.5, 0.5), at + Vector3(0.0, 5.4, 1.7), wood_mat)
+	_box(Vector3(0.5, 0.5, 3.9), at + Vector3(-4.5, 7.2, 0.0), wood_mat)
+	_box(Vector3(0.5, 0.5, 3.9), at + Vector3(4.5, 7.2, 0.0), wood_mat)
+	# and one beam lying across the top of it, off the square, so it is not a tidy box
+	var lean := _box(Vector3(8.4, 0.42, 0.42), at + Vector3(1.0, 8.1, -0.4), wood_mat)
+	lean.rotation.y = 0.35
+
+
+# ── the shapes it is built out of ──────────────────────────────────────────
+
+func _dir(a: float) -> Vector3:
+	return Vector3(cos(a), 0.0, -sin(a))
+
+
+func _cyl(radius: float, height: float, y: float, mat: Material, caps: bool) -> MeshInstance3D:
+	var mi := MeshInstance3D.new()
+	var m := CylinderMesh.new()
+	m.top_radius = radius
+	m.bottom_radius = radius
+	m.height = height
+	m.radial_segments = SEGMENTS
+	m.rings = 1
+	m.cap_top = caps
+	m.cap_bottom = caps
+	mi.mesh = m
+	mi.material_override = mat
+	mi.position = Vector3(0.0, y, 0.0)
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(mi)
+	return mi
+
+
+func _box(size: Vector3, pos: Vector3, mat: Material) -> MeshInstance3D:
+	var mi := MeshInstance3D.new()
+	var b := BoxMesh.new()
+	b.size = size
+	mi.mesh = b
+	mi.material_override = mat
+	mi.position = pos
+	mi.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	add_child(mi)
+	return mi
+
+
+## A stone surface: the picture, tiled, lit and able to catch a reflection. It is not
+## given an emission unless it asks for one, so the floor stays dark under the lanterns
+## while the wall glows.
+func _stone_mat(path: String, rep: Vector2, rough: float, metal: float) -> StandardMaterial3D:
+	var tex := load(path) as Texture2D
+	var m := StandardMaterial3D.new()
+	m.albedo_texture = tex
+	m.uv1_scale = Vector3(rep.x, rep.y, 1.0)
+	m.roughness = rough
+	m.metallic = metal
+	# a wall has two sides and the room is on the inside of it
+	m.cull_mode = BaseMaterial3D.CULL_DISABLED
+	if tex != null:
+		m.emission_texture = tex
+	_stone.append(m)
+	return m
+
+
+## A picture that is not stone and not sky: dark, unlit by the world, and left alone by
+## `react`. The broken slabs and the timber in here are silhouettes in either world, and
+## a silhouette is the one thing in a room that can never stop being visible.
+func _dark(col: Color, rough: float) -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	m.albedo_color = col
+	m.roughness = rough
+	m.cull_mode = BaseMaterial3D.CULL_DISABLED
+	return m
+
+
+## A picture stood up in the room: billboarded unless it is a building.
+func _art(path: String, rep: Vector2) -> StandardMaterial3D:
+	var m := StandardMaterial3D.new()
+	m.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	m.disable_receive_shadows = true
+	m.cull_mode = BaseMaterial3D.CULL_DISABLED
+	m.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS_ANISOTROPIC
+	m.albedo_texture = load(path) as Texture2D
+	m.uv1_scale = Vector3(rep.x, rep.y, 1.0)
+	return m
+
+
+func _prop(art: String, height: float, pos: Vector3, billboard := true, parent: Node3D = null) -> Sprite3D:
+	var s := Sprite3D.new()
+	var tex := load(art) as Texture2D
+	# a picture that is not there still has to *be* a picture, or one unimported file
+	# takes the whole room down with it
+	if tex == null:
+		tex = PlaceholderTexture2D.new()
+	s.texture = tex
+	s.pixel_size = height / float(tex.get_height())
+	s.billboard = BaseMaterial3D.BILLBOARD_ENABLED if billboard else BaseMaterial3D.BILLBOARD_DISABLED
+	s.shaded = false
+	s.alpha_cut = SpriteBase3D.ALPHA_CUT_DISCARD
+	s.texture_filter = BaseMaterial3D.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS_ANISOTROPIC
+	s.position = pos
+	s.visibility_range_end = CULL
+	s.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	if parent == null:
+		add_child(s)
+	else:
+		parent.add_child(s)
+	_props.append(s)
+	return s
+
+
+## A light in the room. It carries no shadow: this hall is a lantern-lit cave and every
+## shadow-casting light in it is another full pass over the room.
+func _lamp(pos: Vector3, energy: float, reach: float) -> OmniLight3D:
+	var l := OmniLight3D.new()
+	l.light_color = Color(1.0, 0.30, 0.14)
+	l.light_energy = energy
+	l.omni_range = reach
+	l.shadow_enabled = false
+	l.position = pos
+	add_child(l)
+	_lights.append(l)
+	return l
+
+
+# ── the world switch ───────────────────────────────────────────────────────
+
+## The world is the paint. Nothing in here is an overlay and nothing in here is hidden by
+## a switch: the same hall is standing in both worlds and only its colour changes, which
+## is what makes the true one the real one and the pale one the picture of it.
+func react(reality: int) -> void:
+	var key: int = 1 if reality == RealityManager.Reality.TRUE else 0
+	var t: Dictionary = TINT[key]
+	for m in _stone:
+		m.albedo_color = t["stone"]
+	for m in _glow:
+		m.emission_enabled = true
+		m.emission = t["glow"]
+		m.emission_energy_multiplier = float(t["energy"])
+	for m in _sky:
+		m.albedo_color = t["sky"]
+	for s in _props:
+		s.modulate = t["prop"]
+	# the mist is the one prop allowed to be thin, so it carries its own alpha
+	var haze: Color = t["mist"]
+	for s in _mist:
+		s.modulate = haze
+	for l in _lights:
+		l.light_color = t["lamp"]
+	_arch_energy = 6.2 if key == 1 else 2.4
